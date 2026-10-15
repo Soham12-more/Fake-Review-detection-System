@@ -139,3 +139,8 @@ Docker Hub: [<your-dockerhub-username>/fake_review_detection](https://hub.docker
 Our project integrates advanced NLP techniques, comprehensive feature engineering, rigorous experimentation, and robust MLflow-based tracking to build a reproducible system for fake review detection. This documentation provides an end-to-end overview of our process, from data preprocessing and model training to deployment. We encourage you to explore the code repository and MLflow experiment dashboard for more details.
 
 *Thank you for your interest in our project!*
+
+## Contributors
+
+- [Soham More](https://github.com/Soham12-more)
+- [Jay Joshi](https://github.com/anonjj)
