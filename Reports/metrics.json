@@ -1,0 +1,63 @@
+{
+  "model": "TF-IDF (1-2 grams) + style/sentiment/repetition stats + corpus similarity -> LogisticRegression",
+  "C": 10,
+  "n_train": 32336,
+  "n_test": 8084,
+  "test": {
+    "accuracy": 0.952,
+    "precision": 0.9469,
+    "recall": 0.9577,
+    "f1": 0.9523
+  },
+  "ablation_test_accuracy": {
+    "tfidf_only": {
+      "C": 10,
+      "val_accuracy": 0.9485,
+      "test_accuracy": 0.9487
+    },
+    "tfidf+stats": {
+      "C": 10,
+      "val_accuracy": 0.9555,
+      "test_accuracy": 0.95
+    },
+    "tfidf+similarity": {
+      "C": 10,
+      "val_accuracy": 0.9483,
+      "test_accuracy": 0.9461
+    },
+    "all": {
+      "C": 10,
+      "val_accuracy": 0.9555,
+      "test_accuracy": 0.9494
+    },
+    "stats+similarity_only": {
+      "C": 0.3,
+      "val_accuracy": 0.8629,
+      "test_accuracy": 0.8606
+    }
+  },
+  "labels": {
+    "0": "Computer-generated (CG)",
+    "1": "Original (OR)"
+  },
+  "deep_learning": {
+    "model": "TextVectorization(20000 words, 200 tokens) -> Embedding(64) -> BiLSTM(64) -> Dense(32) -> sigmoid",
+    "epochs_trained": 3,
+    "best_val_accuracy": 0.9516,
+    "test": {
+      "accuracy": 0.9547,
+      "precision": 0.9607,
+      "recall": 0.9483,
+      "f1": 0.9544
+    }
+  },
+  "ensemble": {
+    "model": "mean of LogisticRegression pipeline and BiLSTM probabilities",
+    "test": {
+      "accuracy": 0.9657,
+      "precision": 0.9668,
+      "recall": 0.9646,
+      "f1": 0.9657
+    }
+  }
+}

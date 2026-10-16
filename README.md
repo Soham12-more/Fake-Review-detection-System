@@ -23,7 +23,7 @@ Welcome to the comprehensive documentation for our Fake Review Detection project
    - [Traditional Machine Learning Models](#traditional-machine-learning-models)
    - [Deep Learning Models](#deep-learning-models)
 5. [Experiment Tracking with MLflow](#experiment-tracking-with-mlflow)
-6. [Deployment](#deployment)
+6. [Running the App](#running-the-app)
 7. [Docker Image](#docker-image)
 8. [Conclusion](#conclusion)
 
@@ -106,12 +106,63 @@ A progress log (`progress_log.csv`) is maintained to ensure experiments are not 
 
 ---
 
-## Deployment
+## Production Pipeline
 
-The Fake Review Detection web application is deployed and accessible online. Users can enter review text to receive predictions on whether the review is computer-generated or original. The application also provides various text analytics and visualizations for better interpretability.
+The web app combines two models: a scikit-learn pipeline (below) and a deep learning BiLSTM (see [Deep Learning Model and Ensemble](#deep-learning-model-and-ensemble)). The pipeline is trained by `src/train.py` as a single object, so the app computes features exactly the way the model was trained on them. Feature code lives in `src/features.py`.
 
-**Access the deployed web app here:**  
-[Fake Review Detection Web App](https://fake-review-detection-mkgwujmh2b6dzcgb6gka2r.streamlit.app/)
+**Signals used by the model:**
+- **Word patterns:** TF-IDF over word unigrams and bigrams (top 50,000).
+- **Sentiment:** TextBlob polarity and subjectivity, plus the mismatch between sentiment and the star rating.
+- **Repetition:** repeated phrases within a review and lexical diversity.
+- **Text similarity:** cosine similarity to the closest training review and the number of near-duplicate training reviews.
+- **Style:** word and sentence length, readability, punctuation, uppercase and exclamation usage.
+
+**Results on a held-out test set** (8,084 reviews, 20% stratified split; the regularization strength is chosen on a separate validation split):
+
+| Features | Test accuracy |
+|----------|---------------|
+| TF-IDF only | 94.87% |
+| TF-IDF + stats | 95.00% |
+| TF-IDF + similarity | 94.61% |
+| All features (refit on full training split) | **95.20%** (precision 94.69%, recall 95.77%, F1 95.23%) |
+| Stats + similarity only (no words) | 86.06% |
+
+Full metrics are written to `Reports/metrics.json` and `Reports/confusion_matrix_pipeline.png`.
+
+### Deep Learning Model and Ensemble
+
+`src/train_dl.py` trains a **bidirectional LSTM** on the same train/validation/test split. It reads the raw review text: a built-in tokenizer (20,000-word vocabulary, first 200 words of each review) feeds a 64-dimensional embedding, a BiLSTM layer with 64 units per direction, and a dense layer. Training stops early when validation accuracy stops improving (3 epochs; best epoch kept). The app averages the probabilities of the two models.
+
+| Model | Test accuracy | Precision | Recall | F1 |
+|-------|---------------|-----------|--------|----|
+| Logistic regression pipeline | 95.20% | 94.69% | 95.77% | 95.23% |
+| BiLSTM (deep learning) | 95.47% | 96.07% | 94.83% | 95.44% |
+| **Ensemble (deployed)** | **96.57%** | **96.68%** | **96.46%** | **96.57%** |
+
+The training curve is saved to `Reports/dl_training_curve.png`.
+
+**Explainability:** the logistic regression model is linear, so for every prediction the app shows how much each word, phrase and signal pushed the decision toward "Original" or "Computer-generated", and lists the most similar training reviews.
+
+**Retrain** (Python 3.10–3.12; TensorFlow does not import on Python 3.9.0):
+```bash
+cd src
+python train.py      # about 10 minutes; writes src/model_pipeline.joblib
+python train_dl.py   # about 8 minutes on CPU; writes src/dl_model.keras and the ensemble metrics
+```
+
+---
+
+## Running the App
+
+The Streamlit web app takes a review and its star rating, predicts whether the review is computer-generated or original, and explains which words and signals drove the prediction.
+
+Use Python 3.10–3.12 (TensorFlow does not import on Python 3.9.0):
+```bash
+python -m venv .venv
+source .venv/Scripts/activate   # Windows (Git Bash); on macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+streamlit run src/app.py        # opens at http://localhost:8501
+```
 
 ---
 

@@ -1,0 +1,136 @@
+"""
+Train the deep learning model (BiLSTM) on the same splits as train.py, then
+score it alone and as an ensemble with the logistic regression pipeline.
+
+    cd src
+    python train.py      # first, if model_pipeline.joblib does not exist yet
+    python train_dl.py
+
+Writes:
+    src/dl_model.keras              - BiLSTM with its tokenizer built in (takes raw text)
+    Reports/metrics.json            - adds "deep_learning" and "ensemble" sections
+    Reports/dl_training_curve.png
+"""
+import json
+import os
+import time
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+import joblib
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+import keras
+import tensorflow as tf
+from keras import layers
+
+from train import MODEL_OUT, REPORTS, SEED, load_splits
+
+DL_MODEL_OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dl_model.keras")
+VOCAB_SIZE = 20000
+SEQUENCE_LENGTH = 200   # words; 93% of reviews fit in full
+EMBEDDING_DIM = 64
+EPOCHS = 6
+BATCH_SIZE = 64
+
+
+def build_model(train_texts):
+    vectorize = layers.TextVectorization(max_tokens=VOCAB_SIZE, output_sequence_length=SEQUENCE_LENGTH,
+                                         name="tokenizer")
+    vectorize.adapt(train_texts, batch_size=1024)
+
+    inputs = keras.Input(shape=(1,), dtype="string", name="review_text")
+    x = vectorize(inputs)
+    x = layers.Embedding(VOCAB_SIZE, EMBEDDING_DIM, mask_zero=True, name="embedding")(x)
+    x = layers.Bidirectional(layers.LSTM(64), name="bilstm")(x)
+    x = layers.Dropout(0.3)(x)
+    x = layers.Dense(32, activation="relu")(x)
+    outputs = layers.Dense(1, activation="sigmoid", name="prob_original")(x)
+
+    model = keras.Model(inputs, outputs, name="bilstm_review_classifier")
+    model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+    return model
+
+
+def scores(y_true, proba):
+    preds = (proba >= 0.5).astype(int)
+    return {
+        "accuracy": round(accuracy_score(y_true, preds), 4),
+        "precision": round(precision_score(y_true, preds), 4),
+        "recall": round(recall_score(y_true, preds), 4),
+        "f1": round(f1_score(y_true, preds), 4),
+    }
+
+
+def as_input(texts):
+    return tf.constant([[t] for t in texts], dtype=tf.string)
+
+
+def as_dataset(texts, labels, shuffle=False):
+    ds = tf.data.Dataset.from_tensor_slices((as_input(texts), np.asarray(labels, dtype="float32")))
+    if shuffle:
+        ds = ds.shuffle(len(labels), seed=SEED)
+    return ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+
+
+def main():
+    t0 = time.time()
+    keras.utils.set_random_seed(SEED)
+    _, _, X_fit, y_fit, X_val, y_val, X_test, y_test = load_splits()
+    print(f"train={len(X_fit)} val={len(X_val)} test={len(X_test)}")
+
+    model = build_model(tf.constant(list(X_fit["text"]), dtype=tf.string))
+    model.summary()
+    history = model.fit(
+        as_dataset(X_fit["text"], y_fit, shuffle=True),
+        validation_data=as_dataset(X_val["text"], y_val),
+        epochs=EPOCHS, verbose=2,
+        callbacks=[keras.callbacks.EarlyStopping(monitor="val_accuracy", patience=1, restore_best_weights=True)],
+    )
+
+    dl_proba = model.predict(as_input(X_test["text"]), batch_size=256, verbose=0).ravel()
+    lr_proba = joblib.load(MODEL_OUT).predict_proba(X_test)[:, 1]
+    ensemble_proba = (dl_proba + lr_proba) / 2
+
+    dl = scores(y_test, dl_proba)
+    ens = scores(y_test, ensemble_proba)
+    lr = scores(y_test, lr_proba)
+    print(f"LogisticRegression pipeline: {lr}")
+    print(f"BiLSTM:                      {dl}")
+    print(f"Ensemble (mean probability): {ens}")
+
+    model.save(DL_MODEL_OUT)
+
+    metrics_path = os.path.join(REPORTS, "metrics.json")
+    with open(metrics_path) as f:
+        metrics = json.load(f)
+    metrics["deep_learning"] = {
+        "model": f"TextVectorization({VOCAB_SIZE} words, {SEQUENCE_LENGTH} tokens) -> Embedding({EMBEDDING_DIM}) "
+                 "-> BiLSTM(64) -> Dense(32) -> sigmoid",
+        "epochs_trained": len(history.history["loss"]),
+        "best_val_accuracy": round(max(history.history["val_accuracy"]), 4),
+        "test": dl,
+    }
+    metrics["ensemble"] = {"model": "mean of LogisticRegression pipeline and BiLSTM probabilities", "test": ens}
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    epochs = range(1, len(history.history["loss"]) + 1)
+    ax.plot(epochs, history.history["accuracy"], marker="o", label="train accuracy")
+    ax.plot(epochs, history.history["val_accuracy"], marker="o", label="validation accuracy")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Accuracy")
+    ax.set_title("BiLSTM training")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(REPORTS, "dl_training_curve.png"), dpi=120)
+
+    print(f"saved {DL_MODEL_OUT} ({os.path.getsize(DL_MODEL_OUT) / 1e6:.1f} MB) in {time.time() - t0:.0f}s total")
+
+
+if __name__ == "__main__":
+    main()
