@@ -111,8 +111,13 @@ class CorpusSimilarity(BaseEstimator, TransformerMixin):
     near_duplicate_count - training reviews with similarity >= near_duplicate_threshold
 
     During fit_transform each training review is compared with the *other*
-    training reviews only, so a review never matches itself.
+    training reviews only, so a review never matches itself. To stay
+    consistent with that, transform ignores exact copies of a training review
+    (similarity >= EXACT_MATCH); otherwise a training review scored again would
+    match itself at 1.0, a value the model never saw during training.
     """
+
+    EXACT_MATCH = 0.999
 
     def __init__(self, near_duplicate_threshold=0.5, chunk_size=500):
         self.near_duplicate_threshold = near_duplicate_threshold
@@ -132,6 +137,8 @@ class CorpusSimilarity(BaseEstimator, TransformerMixin):
             if exclude_self:
                 idx = np.arange(sims.shape[0])
                 sims[idx, start + idx] = 0.0
+            else:
+                sims[sims >= self.EXACT_MATCH] = 0.0
             rows.append(np.column_stack([
                 sims.max(axis=1),
                 (sims >= self.near_duplicate_threshold).sum(axis=1),

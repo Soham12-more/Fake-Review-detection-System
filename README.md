@@ -164,6 +164,13 @@ pip install -r requirements.txt
 streamlit run src/app.py        # opens at http://localhost:8501
 ```
 
+**Whole datasets:** the app's **Batch (CSV file)** tab takes a CSV with one review per row. Choose the text column, and optionally a star-rating column and a true-label column (CG/OR or 0/1). It shows how many reviews were flagged, accuracy if labels are given, and lets you download every prediction as a CSV. From the command line:
+```bash
+cd src
+python predict.py reviews.csv --text-column text_ --rating-column rating --label-column label -o predictions.csv
+```
+Both run at roughly 100 reviews per second on a laptop CPU (the full 40,432-review dataset takes about 4 minutes). Scoring the project's own dataset gives higher accuracy than the held-out figures, because most of it was used for training.
+
 ---
 
 ## Docker Image
