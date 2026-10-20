@@ -1,4 +1,4 @@
-[![Python](https://img.shields.io/badge/Python-3.8-orange)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10--3.12-orange)](https://www.python.org/)
 [![NumPy](https://img.shields.io/badge/NumPy-2.0.2-blue)](https://numpy.org/)
 [![Pandas](https://img.shields.io/badge/Pandas-2.2.3-blue)](https://pandas.pydata.org/)
 [![Scikit-Learn](https://img.shields.io/badge/Scikit--Learn-1.5.2-yellow)](https://scikit-learn.org/)
