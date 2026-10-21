@@ -8,12 +8,19 @@ Options:
     --rating-column      column with 1-5 star ratings (omit to use --default-rating for every row)
     --default-rating     rating used when the rating column is missing or empty (default 5)
     --label-column       column with true labels (CG/OR or 0/1); prints accuracy if given
-    --threshold          probability of "Original" needed to predict Original (default 0.5)
+    --threshold          probability of "Original" needed to predict Original (default: the
+                         threshold chosen by choose_threshold.py, or 0.5 if it hasn't been run)
+    --no-modern          skip the modern-AI check (much faster; it takes ~1.5 s per review on a CPU)
 
-The output CSV is the input with four columns added:
-    prob_original_lr, prob_original_dl, prob_original (the ensemble), prediction
+A review is predicted computer-generated if the ensemble's probability of Original is below the
+threshold, OR the modern-AI detector (modern_detector.py) is confident it was written by modern AI.
+
+The output CSV is the input with these columns added:
+    prob_original_lr, prob_original_dl, prob_original (the ensemble),
+    prob_ai_modern (modern-AI detector), flagged_by, prediction
 """
 import argparse
+import json
 import os
 import time
 import warnings
@@ -28,10 +35,31 @@ from features import to_frame
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "model_pipeline.joblib")
 DL_MODEL_PATH = os.path.join(BASE_DIR, "dl_model.keras")
+METRICS_PATH = os.path.join(BASE_DIR, "..", "Reports", "metrics.json")
 
 LABEL_NAMES = {0: "Computer-generated", 1: "Original"}
 LABEL_ALIASES = {"cg": 0, "computer-generated": 0, "computer generated": 0, "0": 0, "0.0": 0,
                  "or": 1, "original": 1, "1": 1, "1.0": 1}
+
+
+def load_metrics():
+    if not os.path.exists(METRICS_PATH):
+        return {}
+    with open(METRICS_PATH) as f:
+        return json.load(f)
+
+
+def default_threshold(metrics=None):
+    """The threshold chosen by choose_threshold.py, or 0.5 if it hasn't been run."""
+    metrics = load_metrics() if metrics is None else metrics
+    return float(metrics.get("threshold", {}).get("value", 0.5))
+
+
+def default_modern_threshold(metrics=None):
+    """The modern-AI threshold chosen by calibrate_modern.py, or None if it hasn't been run."""
+    metrics = load_metrics() if metrics is None else metrics
+    value = metrics.get("modern_ai", {}).get("threshold")
+    return None if value is None else float(value)
 
 
 def load_pipeline():
@@ -68,9 +96,11 @@ def clean_ratings(ratings, default_rating):
     return r.clip(1, 5).to_numpy()
 
 
-def predict_texts(pipeline, dl_predict, texts, ratings, threshold=0.5, chunk_size=1000, progress=None):
+def predict_texts(pipeline, dl_predict, texts, ratings, threshold=0.5, chunk_size=1000, progress=None,
+                  modern=None, modern_threshold=None):
     """
-    Predict many reviews in chunks. `progress(done, total)` is called after each chunk.
+    Predict many reviews in chunks. `progress(done, total)` is called as work completes
+    (for the modern-AI check if it runs, since that takes almost all the time).
     Empty texts get no prediction (NaN). Returns a DataFrame aligned with `texts`.
     """
     texts = pd.Series(texts).fillna("").astype(str).reset_index(drop=True)
@@ -90,11 +120,20 @@ def predict_texts(pipeline, dl_predict, texts, ratings, threshold=0.5, chunk_siz
             out.loc[rows, "prob_original"] = (lr + dl) / 2
         else:
             out.loc[rows, "prob_original"] = lr
-        if progress is not None:
+        if progress is not None and modern is None:
             progress(min(start + chunk_size, len(idx)), len(idx))
 
+    classic_flag = out["prob_original"] < threshold
+    modern_flag = pd.Series(False, index=out.index)
+    if modern is not None and modern_threshold is not None:
+        out["prob_ai_modern"] = np.nan
+        out.loc[idx, "prob_ai_modern"] = modern.predict(list(texts[idx]), progress=progress)
+        modern_flag = out["prob_ai_modern"] >= modern_threshold
+
+    out["flagged_by"] = np.select([classic_flag & modern_flag, classic_flag, modern_flag],
+                                  ["both checks", "GPT-2-style patterns", "modern AI style"], "")
     out["prediction"] = np.where(out["prob_original"].isna(), "",
-                                 np.where(out["prob_original"] >= threshold, LABEL_NAMES[1], LABEL_NAMES[0]))
+                                 np.where(classic_flag | modern_flag, LABEL_NAMES[0], LABEL_NAMES[1]))
     if dl_predict is None:
         out = out.drop(columns="prob_original_dl")
     return out
@@ -128,12 +167,16 @@ def main():
     parser.add_argument("--rating-column")
     parser.add_argument("--default-rating", type=float, default=5)
     parser.add_argument("--label-column")
-    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--threshold", type=float, default=None)
+    parser.add_argument("--no-modern", action="store_true", help="skip the slow modern-AI check")
     parser.add_argument("-o", "--output", default="predictions.csv")
     args = parser.parse_args()
 
     warnings.filterwarnings("ignore")
     t0 = time.time()
+    if args.threshold is None:
+        args.threshold = default_threshold()
+    print(f"threshold: {args.threshold}")
     df = pd.read_csv(args.csv)
     for col in (args.text_column, args.rating_column, args.label_column):
         if col and col not in df.columns:
@@ -144,11 +187,23 @@ def main():
         parser.error("model_pipeline.joblib not found; run train.py first")
     dl_predict = load_dl_model()
     print("models: logistic regression" + (" + BiLSTM (ensemble)" if dl_predict else " only (BiLSTM unavailable)"))
+    modern, modern_threshold = None, default_modern_threshold()
+    if not args.no_modern and modern_threshold is not None:
+        from modern_detector import load_modern_detector
+        modern = load_modern_detector()
+        if modern is None:
+            print("modern-AI check unavailable (install torch and transformers); skipping it")
+        else:
+            minutes = 1.5 * len(df) / 60
+            duration = f"about {minutes:.0f} min" if minutes >= 1 else "under a minute"
+            print(f"modern-AI check on (threshold {modern_threshold}): {duration} for {len(df)} reviews; "
+                  "use --no-modern to skip")
 
     ratings = clean_ratings(df[args.rating_column] if args.rating_column else [np.nan] * len(df),
                             args.default_rating)
     result = predict_texts(pipeline, dl_predict, df[args.text_column], ratings, args.threshold,
-                           progress=lambda done, total: print(f"  {done}/{total} reviews", flush=True))
+                           progress=lambda done, total: print(f"  {done}/{total} reviews", flush=True),
+                           modern=modern, modern_threshold=modern_threshold)
     out = pd.concat([df.reset_index(drop=True), result], axis=1)
     out.to_csv(args.output, index=False)
 
@@ -156,6 +211,8 @@ def main():
     print(f"\n{len(df)} rows -> {args.output} in {time.time() - t0:.0f}s")
     for name in LABEL_NAMES.values():
         print(f"  {name}: {counts.get(name, 0)}")
+    for reason, n in result.loc[result["flagged_by"] != "", "flagged_by"].value_counts().items():
+        print(f"    flagged by {reason}: {n}")
     skipped = (result["prediction"] == "").sum()
     if skipped:
         print(f"  skipped (empty text): {skipped}")

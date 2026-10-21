@@ -141,6 +141,35 @@ Full metrics are written to `Reports/metrics.json` and `Reports/confusion_matrix
 
 The training curve is saved to `Reports/dl_training_curve.png`.
 
+### Decision Threshold
+
+Each prediction is a probability that the review is Original; reviews below the threshold are labelled computer-generated. `src/choose_threshold.py` picks the threshold automatically: the highest value that flags **at most 1% of genuine reviews**, chosen on the validation split and then checked once on the test set. The app and `predict.py` use it as their default, and it can still be changed with the slider or `--threshold`.
+
+| Threshold | Genuine reviews flagged | Computer-generated caught | Accuracy (test set) |
+|-----------|-------------------------|---------------------------|---------------------|
+| **0.22 (default, automatic)** | **0.99%** | **90.37%** | **94.69%** |
+| 0.50 | 3.54% | 96.68% | 96.57% |
+
+### Modern-AI Check (ChatGPT, GPT-4, LLaMA)
+
+The computer-generated reviews in the Amazon dataset come from GPT-2-era generators and show their typical flaws: sentences cut off mid-way, sentences run together, repetition and incoherence. The models above learned to detect those flaws, and caught **0%** of reviews written by modern models such as ChatGPT and GPT-4, which are fluent and coherent.
+
+We first tried retraining with modern AI reviews from the [MAGE benchmark](https://huggingface.co/datasets/yaful/MAGE) (Li et al., 2024: Yelp reviews from humans and 27 language models). It lowered Amazon accuracy (96.6% to 95.1%) while catching only about 20% of ChatGPT reviews and none of the unseen GPT-4 ones: TF-IDF features and a small LSTM are not strong enough for fluent modern text. That training option is kept in `src/train.py` (`USE_MAGE`) but switched off.
+
+Instead, the app adds a **second check**: the pretrained transformer detector released with MAGE ([`nealcly/detection-longformer`](https://huggingface.co/nealcly/detection-longformer), `src/modern_detector.py`). A review is labelled computer-generated if **either** check flags it. The detector's threshold (0.9964 probability of AI) is chosen by `src/calibrate_modern.py` to flag at most 1% of validation human reviews. Results on test reviews:
+
+| Test reviews | Main models only | **With the modern-AI check** |
+|--------------|------------------|------------------------------|
+| Genuine Amazon reviews wrongly flagged | 0.3% | 2.3% |
+| Genuine Yelp reviews wrongly flagged | 0.0% | 0.0% |
+| Genuine IMDb reviews wrongly flagged | 0.0% | 1.5% |
+| Amazon GPT-2-era fakes caught | 91.3% | 94.0% |
+| ChatGPT reviews caught (Yelp) | 0.0% | **78.8%** |
+| Other modern AI reviews caught (Yelp) | 1.0% | 63.0% |
+| **GPT-4 reviews caught (IMDb, never used in training)** | 0.0% | **96.5%** |
+
+Limitations: the extra check raises false alarms on genuine Amazon reviews to about 2% (above the 1% target, since the detector finds some older Amazon writing AI-like); it works best on longer reviews (modern AI caught: 91% of reviews over 80 words, 59% at 41-80 words, 26% at 21-40 words); it is slow on a CPU (about 1.5 seconds per review); and it needs the optional packages in `requirements-modern.txt`. The Yelp figures are optimistic because the detector was trained on MAGE, while the GPT-4 figures are a fair out-of-distribution test. Test samples are small (150-300 reviews per group), so each figure is approximate.
+
 **Explainability:** the logistic regression model is linear, so for every prediction the app shows how much each word, phrase and signal pushed the decision toward "Original" or "Computer-generated", and lists the most similar training reviews.
 
 **Retrain** (Python 3.10–3.12; TensorFlow does not import on Python 3.9.0):
@@ -148,6 +177,9 @@ The training curve is saved to `Reports/dl_training_curve.png`.
 cd src
 python train.py      # about 10 minutes; writes src/model_pipeline.joblib
 python train_dl.py   # about 8 minutes on CPU; writes src/dl_model.keras and the ensemble metrics
+python choose_threshold.py   # about 4 minutes; picks the default threshold
+python prepare_mage.py       # downloads MAGE (~550 MB) and writes Data/External/
+python calibrate_modern.py   # about 45 minutes; threshold and results for the modern-AI check
 ```
 
 ---
@@ -161,6 +193,7 @@ Use Python 3.10–3.12 (TensorFlow does not import on Python 3.9.0):
 python -m venv .venv
 source .venv/Scripts/activate   # Windows (Git Bash); on macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-modern.txt   # optional: the modern-AI check (~1 GB)
 streamlit run src/app.py        # opens at http://localhost:8501
 ```
 
@@ -169,7 +202,7 @@ streamlit run src/app.py        # opens at http://localhost:8501
 cd src
 python predict.py reviews.csv --text-column text_ --rating-column rating --label-column label -o predictions.csv
 ```
-Both run at roughly 100 reviews per second on a laptop CPU (the full 40,432-review dataset takes about 4 minutes). Scoring the project's own dataset gives higher accuracy than the held-out figures, because most of it was used for training.
+The main models run at roughly 100 reviews per second on a laptop CPU (the full 40,432-review dataset takes about 4 minutes). The modern-AI check takes about 1.5 seconds per review, so it is optional for large files (`--no-modern` on the command line). Scoring the project's own dataset gives higher accuracy than the held-out figures, because most of it was used for training.
 
 ---
 

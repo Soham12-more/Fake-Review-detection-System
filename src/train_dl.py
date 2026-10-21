@@ -22,12 +22,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import keras
 import tensorflow as tf
 from keras import layers
 
-from train import MODEL_OUT, REPORTS, SEED, load_splits
+from train import MODEL_OUT, REPORTS, SEED, load_splits, scores_by_source
 
 DL_MODEL_OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dl_model.keras")
 VOCAB_SIZE = 20000
@@ -53,16 +52,6 @@ def build_model(train_texts):
     model = keras.Model(inputs, outputs, name="bilstm_review_classifier")
     model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
     return model
-
-
-def scores(y_true, proba):
-    preds = (proba >= 0.5).astype(int)
-    return {
-        "accuracy": round(accuracy_score(y_true, preds), 4),
-        "precision": round(precision_score(y_true, preds), 4),
-        "recall": round(recall_score(y_true, preds), 4),
-        "f1": round(f1_score(y_true, preds), 4),
-    }
 
 
 def as_input(texts):
@@ -95,12 +84,13 @@ def main():
     lr_proba = joblib.load(MODEL_OUT).predict_proba(X_test)[:, 1]
     ensemble_proba = (dl_proba + lr_proba) / 2
 
-    dl = scores(y_test, dl_proba)
-    ens = scores(y_test, ensemble_proba)
-    lr = scores(y_test, lr_proba)
-    print(f"LogisticRegression pipeline: {lr}")
-    print(f"BiLSTM:                      {dl}")
-    print(f"Ensemble (mean probability): {ens}")
+    by_source = {name: scores_by_source(X_test, y_test, p)
+                 for name, p in [("lr", lr_proba), ("dl", dl_proba), ("ensemble", ensemble_proba)]}
+    dl, ens = by_source["dl"]["all"], by_source["ensemble"]["all"]
+    for name, label in [("lr", "LogisticRegression pipeline"), ("dl", "BiLSTM"), ("ensemble", "Ensemble")]:
+        print(f"{label}:")
+        for source, m in by_source[name].items():
+            print(f"  {source:10s} n={m['n']:<6} accuracy {m['accuracy']:.2%}  F1 {m['f1']:.2%}")
 
     model.save(DL_MODEL_OUT)
 
@@ -113,8 +103,10 @@ def main():
         "epochs_trained": len(history.history["loss"]),
         "best_val_accuracy": round(max(history.history["val_accuracy"]), 4),
         "test": dl,
+        "test_by_source": by_source["dl"],
     }
-    metrics["ensemble"] = {"model": "mean of LogisticRegression pipeline and BiLSTM probabilities", "test": ens}
+    metrics["ensemble"] = {"model": "mean of LogisticRegression pipeline and BiLSTM probabilities", "test": ens,
+                           "test_by_source": by_source["ensemble"]}
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
 

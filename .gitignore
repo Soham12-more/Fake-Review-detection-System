@@ -170,3 +170,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Raw MAGE downloads (large); src/prepare_mage.py re-downloads them
+Data/External/raw/

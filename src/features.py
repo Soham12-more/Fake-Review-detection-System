@@ -188,10 +188,10 @@ def explain(pipeline, text, rating, top_k=8):
     words["feature"] = words["feature"].str.replace("tfidf__", "", regex=False)
     words = words.reindex(words["contribution"].abs().sort_values(ascending=False).index).head(top_k)
 
-    raw = dict(zip(STAT_FEATURES + SIMILARITY_FEATURES,
-                   np.concatenate([TextStats().transform(to_frame([text], [rating]))[0],
-                                   features.named_transformers_["similarity"].named_steps["sim"]
-                                   .transform([text])[0]])))
+    raw = dict(zip(STAT_FEATURES, TextStats().transform(to_frame([text], [rating]))[0]))
+    if "similarity" in features.named_transformers_:
+        sim = features.named_transformers_["similarity"].named_steps["sim"]
+        raw.update(zip(SIMILARITY_FEATURES, sim.transform([text])[0]))
     other = df[~is_word].copy()
     other["feature"] = other["feature"].str.split("__").str[-1]
     other["value"] = other["feature"].map(raw)
